@@ -238,7 +238,7 @@ def insert_user_data(connection, data, credentials=None):
     cursor = connection.cursor()
     try:
         if credentials:
-            # Update existing user
+            # Update existing user and get application_id
             cursor.execute("""
                 UPDATE applications 
                 SET last_name=%s, first_name=%s, patronymic=%s, phone=%s, email=%s, 
@@ -251,11 +251,10 @@ def insert_user_data(connection, data, credentials=None):
                 credentials['username']
             ))
             
-            application_id = cursor.execute("""
-                SELECT id FROM applications WHERE username=%s
-            """, (credentials['username'],))
+            cursor.execute("SELECT id FROM applications WHERE username=%s", (credentials['username'],))
+            result = cursor.fetchone()
+            application_id = result['id'] if result else None
         else:
-            # Insert new user
             credentials = generate_credentials()
             hashed_password = hash_password(credentials['password'])
             
@@ -273,25 +272,15 @@ def insert_user_data(connection, data, credentials=None):
             
             application_id = cursor.lastrowid
 
-        # Update languages - используем правильное имя таблицы
-        cursor.execute("""
-            DELETE FROM application_languages 
-            WHERE application_id=%s
-        """, (application_id,))
+        if not application_id:
+            raise Exception("Не удалось получить ID заявки")
+
+        cursor.execute("DELETE FROM application_languages WHERE application_id=%s", (application_id,))
 
         language_ids = {
-            'Pascal': 1,
-            'C': 2,
-            'C++': 3,
-            'JavaScript': 4,
-            'PHP': 5,
-            'Python': 6,
-            'Java': 7,
-            'Haskel': 8,
-            'Clojure': 9,
-            'Prolog': 10,
-            'Scala': 11,
-            'Go': 12
+            'Pascal': 1, 'C': 2, 'C++': 3, 'JavaScript': 4, 'PHP': 5,
+            'Python': 6, 'Java': 7, 'Haskel': 8, 'Clojure': 9,
+            'Prolog': 10, 'Scala': 11, 'Go': 12
         }
 
         for language in data['languages']:
@@ -304,10 +293,18 @@ def insert_user_data(connection, data, credentials=None):
         
         connection.commit()
         return credentials
+        
     except pymysql.Error as e:
         print("Content-Type: text/html; charset=utf-8")
         print("\n")
-        print(f"Ошибка при вставке данных: {e}")
+        print(f"<h1>Ошибка базы данных: {e}</h1>")
+        connection.rollback()
+        return None
+    except Exception as e:
+        print("Content-Type: text/html; charset=utf-8")
+        print("\n")
+        print(f"<h1>Ошибка: {e}</h1>")
+        connection.rollback()
         return None
     finally:
         cursor.close()
@@ -377,10 +374,8 @@ if __name__ == "__main__":
     form = cgi.FieldStorage()
     request_method = os.environ.get('REQUEST_METHOD', '')
     
-    # Check if user is logging in or out
     action = form.getvalue('action')
     
-    # Handle login
     if action == 'login' and request_method == 'POST':
         username = form.getvalue('username', '').strip()
         password = form.getvalue('password', '').strip()
@@ -388,13 +383,11 @@ if __name__ == "__main__":
         connection = create_connection()
         if connection:
             if verify_user(connection, username, password):
-                # Create session
                 session_id = secrets.token_hex(16)
                 cookie['session_id'] = session_id
                 cookie['session_id']['path'] = '/'
                 cookie['session_id']['expires'] = (datetime.now() + timedelta(days=1)).strftime('%a, %d %b %Y %H:%M:%S GMT')
                 
-                # Store session in database
                 cursor = connection.cursor()
                 try:
                     cursor.execute("""
@@ -409,7 +402,6 @@ if __name__ == "__main__":
                 finally:
                     cursor.close()
                 
-                # Redirect to main page
                 print("Content-Type: text/html; charset=utf-8")
                 print("Status: 303 See Other")
                 print("Location: submit_form.py")
@@ -419,17 +411,14 @@ if __name__ == "__main__":
                 exit()
             connection.close()
         
-        # If login failed
         print("Content-Type: text/html; charset=utf-8")
         print("\n")
         print("<h1>Неверный логин или пароль</h1>")
         exit()
     
-    # Handle logout
     elif action == 'logout' and request_method == 'POST':
         session_id = cookie.get('session_id')
         if session_id:
-            # Delete session from database
             connection = create_connection()
             if connection:
                 cursor = connection.cursor()
@@ -442,12 +431,10 @@ if __name__ == "__main__":
                     cursor.close()
                 connection.close()
             
-            # Clear session cookie
             cookie['session_id'] = ''
             cookie['session_id']['path'] = '/'
             cookie['session_id']['expires'] = 'Thu, 01 Jan 1970 00:00:00 GMT'
         
-        # Redirect to main page
         print("Content-Type: text/html; charset=utf-8")
         print("Status: 303 See Other")
         print("Location: submit_form.py")
@@ -455,7 +442,6 @@ if __name__ == "__main__":
         print("\n")
         exit()
     
-    # Check if user is authenticated
     is_logged_in = False
     username = None
     session_id = cookie.get('session_id')
@@ -490,7 +476,6 @@ if __name__ == "__main__":
         'contract': 'contract' in form 
     }
 
-    # If user is logged in, load their data
     if is_logged_in and not any(data.values()):
         connection = create_connection()
         if connection:
@@ -499,7 +484,6 @@ if __name__ == "__main__":
                 data.update(user_data)
             connection.close()
     
-    # If not logged in, try to load from cookies
     elif not any(data.values()):
         for field in data.keys():
             if field in cookie:
@@ -531,11 +515,9 @@ if __name__ == "__main__":
             connection = create_connection()
             if connection:
                 if is_logged_in:
-                    # Update existing user
                     credentials = insert_user_data(connection, data, {'username': username})
                     success_message = "<h1>Данные успешно обновлены</h1>"
                 else:
-                    # Create new user
                     credentials = insert_user_data(connection, data)
                     if credentials:
                         success_message = f"""
